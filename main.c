@@ -49,7 +49,7 @@ parser_t	*parser		= NULL;
 /* settings */
 struct port_options port_opts = {
 	.device			= NULL,
-	.baudRate		= SERIAL_BAUD_57600,
+	.baudRate		= SERIAL_BAUD_115200,
 	.serial_mode		= "8e1",
 	.bus_addr		= 0,
 	.rx_frame_max		= STM32_MAX_RX_FRAME,
@@ -712,7 +712,7 @@ void show_help(char *name) {
 	fprintf(stderr,
 		"Usage: %s [-bvngfhc] [-[rw] filename] [tty_device | i2c_device]\n"
 		"	-a bus_address	Bus address (e.g. for I2C port)\n"
-		"	-b rate		Baud rate (default 57600)\n"
+		"	-b rate		Baud rate (default 115200)\n"
 		"	-m mode		Serial port mode (default 8e1)\n"
 		"	-r filename	Read flash to file (or - stdout)\n"
 		"	-w filename	Write flash from file (or - stdout)\n"
