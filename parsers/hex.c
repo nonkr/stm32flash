@@ -32,7 +32,7 @@
 typedef struct {
 	size_t		data_len, offset;
 	uint8_t		*data;
-	uint8_t		base;
+	uint32_t	base;
 } hex_t;
 
 void* hex_init() {
@@ -105,7 +105,7 @@ parser_err_t hex_open(void *storage, const char *filename, const char write) {
 
 				/* extended linear address record */
 				case 4:
-					base = address;
+					base = 0;
 					break;
 			}
 
@@ -152,12 +152,17 @@ parser_err_t hex_open(void *storage, const char *filename, const char write) {
 					return PARSER_ERR_OK;
 
 				/* address record */
+				case 4:	base = base << 12;
 				case 2: base = base << 4;
-				case 4:	base = be_u32(base);
 					/* Reset last_address since our base changed */
 					last_address = 0;
 
-					if (st->base == 0) {
+					/* Only assign the program's base address once, and only
+					 * do so if we haven't seen any data records yet.
+					 * If there are any data records before address records,
+					 * the program's base address must be zero.
+					 */
+					if (st->base == 0 && st->data_len == 0) {
 						st->base = base;
 						break;
 					}
@@ -168,11 +173,11 @@ parser_err_t hex_open(void *storage, const char *filename, const char write) {
 						return PARSER_ERR_INVALID_FILE;
 					}
 
-					/* if there is a gap, enlarge and fill with zeros */
+					/* if there is a gap, enlarge and fill with 0xff */
 					unsigned int len = base - st->base;
 					if (len > st->data_len) {
 						st->data = realloc(st->data, len);
-						memset(&st->data[st->data_len], 0, len - st->data_len);
+						memset(&st->data[st->data_len], 0xff, len - st->data_len);
 						st->data_len = len;
 					}
 					break;

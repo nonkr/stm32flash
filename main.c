@@ -2,8 +2,8 @@
   stm32flash - Open Source ST STM32 flash program for *nix
   Copyright 2010 Geoffrey McRae <geoff@spacevs.com>
   Copyright 2011 Steve Markgraf <steve@steve-m.de>
-  Copyright 2012 Tormod Volden <debian.tormod@gmail.com>
-  Copyright 2013 Antonio Borneo <borneo.antonio@gmail.com>
+  Copyright 2012-2016 Tormod Volden <debian.tormod@gmail.com>
+  Copyright 2013-2016 Antonio Borneo <borneo.antonio@gmail.com>
 
   This program is free software; you can redistribute it and/or
   modify it under the terms of the GNU General Public License
@@ -38,7 +38,7 @@
 #include "parsers/binary.h"
 #include "parsers/hex.h"
 
-#define VERSION "0.4"
+#define VERSION "0.5"
 
 /* device globals */
 stm32_t		*stm		= NULL;
@@ -55,13 +55,19 @@ struct port_options port_opts = {
 	.rx_frame_max		= STM32_MAX_RX_FRAME,
 	.tx_frame_max		= STM32_MAX_TX_FRAME,
 };
-int		rd	 	= 0;
-int		wr		= 0;
-int		wu		= 0;
-int		rp		= 0;
-int		ur		= 0;
-int		eraseOnly	= 0;
-int		crc		= 0;
+
+enum actions {
+	ACT_NONE,
+	ACT_READ,
+	ACT_WRITE,
+	ACT_WRITE_UNPROTECT,
+	ACT_READ_PROTECT,
+	ACT_READ_UNPROTECT,
+	ACT_ERASE_ONLY,
+	ACT_CRC
+};
+
+enum actions	action		= ACT_NONE;
 int		npages		= 0;
 int             spage           = 0;
 int             no_erase        = 0;
@@ -81,6 +87,36 @@ uint32_t	readwrite_len	= 0;
 int  parse_options(int argc, char *argv[]);
 void show_help(char *name);
 
+static const char *action2str(enum actions act)
+{
+	switch (act) {
+		case ACT_READ:
+			return "memory read";
+		case ACT_WRITE:
+			return "memory write";
+		case ACT_WRITE_UNPROTECT:
+			return "write unprotect";
+		case ACT_READ_PROTECT:
+			return "read protect";
+		case ACT_READ_UNPROTECT:
+			return "read unprotect";
+		case ACT_ERASE_ONLY:
+			return "flash erase";
+		case ACT_CRC:
+			return "memory crc";
+		default:
+			return "";
+	};
+}
+
+static void err_multi_action(enum actions new)
+{
+	fprintf(stderr,
+		"ERROR: Invalid options !\n"
+		"\tCan't execute \"%s\" and \"%s\" at the same time.\n",
+		action2str(action), action2str(new));
+}
+
 static int is_addr_in_ram(uint32_t addr)
 {
 	return addr >= stm->dev->ram_start && addr < stm->dev->ram_end;
@@ -91,26 +127,68 @@ static int is_addr_in_flash(uint32_t addr)
 	return addr >= stm->dev->fl_start && addr < stm->dev->fl_end;
 }
 
+/* returns the page that contains address "addr" */
 static int flash_addr_to_page_floor(uint32_t addr)
 {
+	int page;
+	uint32_t *psize;
+
 	if (!is_addr_in_flash(addr))
 		return 0;
 
-	return (addr - stm->dev->fl_start) / stm->dev->fl_ps;
+	page = 0;
+	addr -= stm->dev->fl_start;
+	psize = stm->dev->fl_ps;
+
+	while (addr >= psize[0]) {
+		addr -= psize[0];
+		page++;
+		if (psize[1])
+			psize++;
+	}
+
+	return page;
 }
 
-static int flash_addr_to_page_ceil(uint32_t addr)
+/* returns the first page whose start addr is >= "addr" */
+int flash_addr_to_page_ceil(uint32_t addr)
 {
+	int page;
+	uint32_t *psize;
+
 	if (!(addr >= stm->dev->fl_start && addr <= stm->dev->fl_end))
 		return 0;
 
-	return (addr + stm->dev->fl_ps - 1 - stm->dev->fl_start)
-	       / stm->dev->fl_ps;
+	page = 0;
+	addr -= stm->dev->fl_start;
+	psize = stm->dev->fl_ps;
+
+	while (addr >= psize[0]) {
+		addr -= psize[0];
+		page++;
+		if (psize[1])
+			psize++;
+	}
+
+	return addr ? page + 1 : page;
 }
 
+/* returns the lower address of flash page "page" */
 static uint32_t flash_page_to_addr(int page)
 {
-	return stm->dev->fl_start + page * stm->dev->fl_ps;
+	int i;
+	uint32_t addr, *psize;
+
+	addr = stm->dev->fl_start;
+	psize = stm->dev->fl_ps;
+
+	for (i = 0; i < page; i++) {
+		addr += psize[0];
+		if (psize[1])
+			psize++;
+	}
+
+	return addr;
 }
 
 int main(int argc, char* argv[]) {
@@ -121,15 +199,15 @@ int main(int argc, char* argv[]) {
 	FILE *diag = stdout;
 
 	fprintf(diag, "stm32flash " VERSION "\n\n");
-	fprintf(diag, "http://stm32flash.googlecode.com/\n\n");
+	fprintf(diag, "http://stm32flash.sourceforge.net/\n\n");
 	if (parse_options(argc, argv) != 0)
 		goto close;
 
-	if (rd && filename[0] == '-') {
+	if ((action == ACT_READ) && filename[0] == '-') {
 		diag = stderr;
 	}
 
-	if (wr) {
+	if (action == ACT_WRITE) {
 		/* first try hex */
 		if (!force_binary) {
 			parser = &PARSER_HEX;
@@ -194,7 +272,7 @@ int main(int argc, char* argv[]) {
 	}
 	fprintf(diag, "Device ID    : 0x%04x (%s)\n", stm->pid, stm->dev->name);
 	fprintf(diag, "- RAM        : %dKiB  (%db reserved by bootloader)\n", (stm->dev->ram_end - 0x20000000) / 1024, stm->dev->ram_start - 0x20000000);
-	fprintf(diag, "- Flash      : %dKiB (sector size: %dx%d)\n", (stm->dev->fl_end - stm->dev->fl_start ) / 1024, stm->dev->fl_pps, stm->dev->fl_ps);
+	fprintf(diag, "- Flash      : %dKiB (size first sector: %dx%d)\n", (stm->dev->fl_end - stm->dev->fl_start ) / 1024, stm->dev->fl_pps, stm->dev->fl_ps[0]);
 	fprintf(diag, "- Option RAM : %db\n", stm->dev->opt_end - stm->dev->opt_start + 1);
 	fprintf(diag, "- System RAM : %dKiB\n", (stm->dev->mem_end - stm->dev->mem_start) / 1024);
 
@@ -230,14 +308,14 @@ int main(int argc, char* argv[]) {
 
 		first_page = flash_addr_to_page_floor(start);
 		if (!first_page && end == stm->dev->fl_end)
-			num_pages = 0xff; /* mass erase */
+			num_pages = STM32_MASS_ERASE;
 		else
 			num_pages = flash_addr_to_page_ceil(end) - first_page;
 	} else if (!spage && !npages) {
 		start = stm->dev->fl_start;
 		end = stm->dev->fl_end;
 		first_page = 0;
-		num_pages = 0xff; /* mass erase */
+		num_pages = STM32_MASS_ERASE;
 	} else {
 		first_page = spage;
 		start = flash_page_to_addr(first_page);
@@ -257,10 +335,10 @@ int main(int argc, char* argv[]) {
 		}
 
 		if (!first_page && end == stm->dev->fl_end)
-			num_pages = 0xff; /* mass erase */
+			num_pages = STM32_MASS_ERASE;
 	}
 
-	if (rd) {
+	if (action == ACT_READ) {
 		unsigned int max_len = port_opts.rx_frame_max;
 
 		fprintf(diag, "Memory read\n");
@@ -300,23 +378,23 @@ int main(int argc, char* argv[]) {
 		fprintf(diag,	"Done.\n");
 		ret = 0;
 		goto close;
-	} else if (rp) {
+	} else if (action == ACT_READ_PROTECT) {
 		fprintf(stdout, "Read-Protecting flash\n");
 		/* the device automatically performs a reset after the sending the ACK */
 		reset_flag = 0;
 		stm32_readprot_memory(stm);
 		fprintf(stdout,	"Done.\n");
-	} else if (ur) {
+	} else if (action == ACT_READ_UNPROTECT) {
 		fprintf(stdout, "Read-UnProtecting flash\n");
 		/* the device automatically performs a reset after the sending the ACK */
 		reset_flag = 0;
 		stm32_runprot_memory(stm);
 		fprintf(stdout,	"Done.\n");
-	} else if (eraseOnly) {
+	} else if (action == ACT_ERASE_ONLY) {
 		ret = 0;
 		fprintf(stdout, "Erasing flash\n");
 
-		if (num_pages != 0xff &&
+		if (num_pages != STM32_MASS_ERASE &&
 		    (start != flash_page_to_addr(first_page)
 		     || end != flash_page_to_addr(first_page + num_pages))) {
 			fprintf(stderr, "Specified start & length are invalid (must be page aligned)\n");
@@ -330,14 +408,14 @@ int main(int argc, char* argv[]) {
 			ret = 1;
 			goto close;
 		}
-	} else if (wu) {
+	} else if (action == ACT_WRITE_UNPROTECT) {
 		fprintf(diag, "Write-unprotecting flash\n");
 		/* the device automatically performs a reset after the sending the ACK */
 		reset_flag = 0;
 		stm32_wunprot_memory(stm);
 		fprintf(diag,	"Done.\n");
 
-	} else if (wr) {
+	} else if (action == ACT_WRITE) {
 		fprintf(diag, "Write to memory\n");
 
 		off_t 	offset = 0;
@@ -359,7 +437,7 @@ int main(int argc, char* argv[]) {
 
 		// TODO: It is possible to write to non-page boundaries, by reading out flash
 		//       from partial pages and combining with the input data
-		// if ((start % stm->dev->fl_ps) != 0 || (end % stm->dev->fl_ps) != 0) {
+		// if ((start % stm->dev->fl_ps[i]) != 0 || (end % stm->dev->fl_ps[i]) != 0) {
 		//	fprintf(stderr, "Specified start & length are invalid (must be page aligned)\n");
 		//	goto close;
 		// } 
@@ -450,7 +528,7 @@ int main(int argc, char* argv[]) {
 		fprintf(diag,	"Done.\n");
 		ret = 0;
 		goto close;
-	} else if (crc) {
+	} else if (action == ACT_CRC) {
 		uint32_t crc_val = 0;
 
 		fprintf(diag, "CRC computation\n");
@@ -533,12 +611,11 @@ int parse_options(int argc, char *argv[])
 
 			case 'r':
 			case 'w':
-				rd = rd || c == 'r';
-				wr = wr || c == 'w';
-				if (rd && wr) {
-					fprintf(stderr, "ERROR: Invalid options, can't read & write at the same time\n");
+				if (action != ACT_NONE) {
+					err_multi_action((c == 'r') ? ACT_READ : ACT_WRITE);
 					return 1;
 				}
+				action = (c == 'r') ? ACT_READ : ACT_WRITE;
 				filename = optarg;
 				if (filename[0] == '-') {
 					force_binary = 1;
@@ -558,37 +635,37 @@ int parse_options(int argc, char *argv[])
 					no_erase = 1;
 				break;
 			case 'u':
-				wu = 1;
-				if (rd || wr) {
-					fprintf(stderr, "ERROR: Invalid options, can't write unprotect and read/write at the same time\n");
+				if (action != ACT_NONE) {
+					err_multi_action(ACT_WRITE_UNPROTECT);
 					return 1;
 				}
+				action = ACT_WRITE_UNPROTECT;
 				break;
 
 			case 'j':
-				rp = 1;
-				if (rd || wr) {
-					fprintf(stderr, "ERROR: Invalid options, can't read protect and read/write at the same time\n");
+				if (action != ACT_NONE) {
+					err_multi_action(ACT_READ_PROTECT);
 					return 1;
 				}
+				action = ACT_READ_PROTECT;
 				break;
 
 			case 'k':
-				ur = 1;
-				if (rd || wr) {
-					fprintf(stderr, "ERROR: Invalid options, can't read unprotect and read/write at the same time\n");
+				if (action != ACT_NONE) {
+					err_multi_action(ACT_READ_UNPROTECT);
 					return 1;
 				}
+				action = ACT_READ_UNPROTECT;
 				break;
 
 			case 'o':
-				eraseOnly = 1;
-				if (rd || wr) {
-					fprintf(stderr, "ERROR: Invalid options, can't erase-only and read/write at the same time\n");
+				if (action != ACT_NONE) {
+					err_multi_action(ACT_ERASE_ONLY);
 					return 1;
 				}
-				break;				
-			
+				action = ACT_ERASE_ONLY;
+				break;
+
 			case 'v':
 				verify = 1;
 				break;
@@ -644,9 +721,9 @@ int parse_options(int argc, char *argv[])
 				if (port_opts.tx_frame_max == 0)
 					port_opts.tx_frame_max = STM32_MAX_TX_FRAME;
 				if (port_opts.rx_frame_max < 20
-				    || port_opts.tx_frame_max < 5) {
+				    || port_opts.tx_frame_max < 6) {
 					fprintf(stderr, "ERROR: current code cannot work with small frames.\n");
-					fprintf(stderr, "min(RX) = 20, min(TX) = 5\n");
+					fprintf(stderr, "min(RX) = 20, min(TX) = 6\n");
 					return 1;
 				}
 				if (port_opts.rx_frame_max > STM32_MAX_RX_FRAME) {
@@ -679,7 +756,11 @@ int parse_options(int argc, char *argv[])
 				break;
 
 			case 'C':
-				crc = 1;
+				if (action != ACT_NONE) {
+					err_multi_action(ACT_CRC);
+					return 1;
+				}
+				action = ACT_CRC;
 				break;
 		}
 	}
@@ -699,7 +780,7 @@ int parse_options(int argc, char *argv[])
 		return 1;
 	}
 
-	if (!wr && verify) {
+	if ((action != ACT_WRITE) && verify) {
 		fprintf(stderr, "ERROR: Invalid usage, -v is only valid when writing\n");
 		show_help(argv[0]);
 		return 1;
@@ -760,7 +841,7 @@ void show_help(char *name) {
 		"	GPIO sequence:\n"
 		"	- entry sequence: GPIO_3=low, GPIO_2=low, GPIO_2=high\n"
 		"	- exit sequence: GPIO_3=high, GPIO_2=low, GPIO_2=high\n"
-		"		%s -i -3,-2,2:3,-2,2 /dev/ttyS0\n",
+		"		%s -R -i -3,-2,2:3,-2,2 /dev/ttyS0\n",
 		name,
 		name,
 		name,
