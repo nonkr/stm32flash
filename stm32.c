@@ -328,7 +328,6 @@ static stm32_err_t stm32_send_init_seq(const stm32_t *stm)
 		return STM32_ERR_OK;
 	}
 	if (p_err != PORT_ERR_TIMEDOUT) {
-		fprintf(stderr, "Failed to init device.\n");
 		return STM32_ERR_UNKNOWN;
 	}
 
@@ -366,15 +365,7 @@ stm32_t *stm32_init(struct port_interface *port, const char init)
 
     if ((port->flags & PORT_CMD_INIT) && init)
     {
-        int cnt = 0;
-        while (stm32_send_init_seq(stm) != STM32_ERR_OK)
-        {
-            if (cnt++ > 20)
-            {
-                fprintf(stderr, "Failed to init device.\n");
-                return NULL;
-            }
-        }
+        while (stm32_send_init_seq(stm) != STM32_ERR_OK);
     }
 
 	/* get the version and read protection status  */
