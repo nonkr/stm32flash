@@ -369,7 +369,7 @@ stm32_t *stm32_init(struct port_interface *port, const char init)
         int cnt = 0;
         while (stm32_send_init_seq(stm) != STM32_ERR_OK)
         {
-            if (cnt++ > 10)
+            if (cnt++ > 20)
             {
                 fprintf(stderr, "Failed to init device.\n");
                 return NULL;
