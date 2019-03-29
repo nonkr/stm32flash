@@ -300,7 +300,10 @@ static port_err_t serial_posix_gpio(struct port_interface *port,
 				    serial_gpio_t n, int level)
 {
 	serial_t *h;
-	int bit, lines;
+	int bit;
+#if !defined(__APPLE__)
+	int lines;
+#endif
 
 	h = (serial_t *)port->private;
 	if (h == NULL)
@@ -326,12 +329,19 @@ static port_err_t serial_posix_gpio(struct port_interface *port,
 		return PORT_ERR_UNKNOWN;
 	}
 
-	/* handle RTS/DTR */
-	if (ioctl(h->fd, TIOCMGET, &lines))
-		return PORT_ERR_UNKNOWN;
-	lines = level ? lines | bit : lines & ~bit;
-	if (ioctl(h->fd, TIOCMSET, &lines))
-		return PORT_ERR_UNKNOWN;
+#if defined(__APPLE__)
+    if (level == 0)
+        ioctl(h->fd, TIOCMBIC, &bit);
+    else
+        ioctl(h->fd, TIOCMBIS, &bit);
+#else
+    /* handle RTS/DTR */
+    if (ioctl(h->fd, TIOCMGET, &lines))
+        return PORT_ERR_UNKNOWN;
+    lines = level ? lines | bit : lines & ~bit;
+    if (ioctl(h->fd, TIOCMSET, &lines))
+        return PORT_ERR_UNKNOWN;
+#endif
 
 	return PORT_ERR_OK;
 }

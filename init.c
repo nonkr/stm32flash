@@ -208,10 +208,14 @@ static int gpio_sequence(struct port_interface *port, const char *s, size_t l)
 				break;
 			}
 		}
-		if (gpio < 0)
-			ret = (port->gpio(port, -gpio, level) == PORT_ERR_OK);
-		else
-			ret = drive_gpio(gpio, level, &gpio_to_release);
+#if defined(__APPLE__)
+        ret = (port->gpio(port, -gpio, level) == PORT_ERR_OK);
+#else
+        if (gpio < 0)
+            ret = (port->gpio(port, -gpio, level) == PORT_ERR_OK);
+        else
+            ret = drive_gpio(gpio, level, &gpio_to_release);
+#endif
 		usleep(100000);
 	}
 

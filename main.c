@@ -38,7 +38,7 @@
 #include "parsers/binary.h"
 #include "parsers/hex.h"
 
-#define VERSION "0.5.2"
+#define VERSION "0.5.3"
 
 /* device globals */
 stm32_t		*stm		= NULL;
